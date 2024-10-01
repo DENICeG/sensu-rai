@@ -3,5 +3,5 @@ api_version: core/v2
 metadata:
   name: sensu-rai
 spec:
-  sha512: 80ff8825fe2508cc22697699988d01f91d6ab9d940e24bef2dabc8fa52e65fb5eb9d882e483bb04d7ebf3f2964fc4f8d80b5b4f40dc701a5c8e301239397456e
-  url: https://github.com/DENICeG/sensu-rai/releases/download/v.0.0.4/sensu-rai_v.0.0.4_linux_amd64.tar.gz
+  sha512: 1304bcd29c1f8711eb642f9dda9f733e5ef4516b5cf19e1ed3ee174893929f897480b1c5b206e315cff25ad9eb683e4b255d502f37ed37e781e0d86fbc997fc7
+  url: https://github.com/DENICeG/sensu-rai/releases/download/v.0.0.5/sensu-rai_v.0.0.5_linux_amd64.tar.gz
