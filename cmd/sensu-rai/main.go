@@ -172,7 +172,7 @@ func RunDefaultWithJar(account, password, twofa string) {
 	} else {
 		printFailMetricsAndExit("Connection to RAI failed")
 	}
-	os.Exit(1)
+	os.Exit(0)
 }
 
 func printFailMetricsAndExit(errors ...string) {
