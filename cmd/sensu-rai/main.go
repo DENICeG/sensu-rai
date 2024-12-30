@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,13 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
+type RequestDurations struct {
+	InitUrl  int64
+	StartUrl int64
+	LoginUrl int64
+	Total    int64
+}
+
 var (
 	timeBegin   = time.Now()
 	httpResp    *http.Response
@@ -25,6 +33,8 @@ var (
 	raiRegacc   string
 	raiPassword string
 	rai2fa      string
+
+	errConnectionToRAIFailed = errors.New("Connection to RAI failed")
 )
 
 func main() {
@@ -38,20 +48,44 @@ func RunDefault() {
 	raiRegacc = os.Getenv("RAI_REGACC")
 	raiPassword = os.Getenv("RAI_PW")
 	rai2fa = os.Getenv("RAI_2FA")
-	RunDefaultWithJar(raiRegacc, raiPassword, rai2fa)
+	RunDefaultWithJarWrapper(raiRegacc, raiPassword, rai2fa)
 }
 
-func RunDefaultWithJar(account, password, twofa string) {
+func RunDefaultWithJarWrapper(account, password, twofa string) {
+	durations, err := RunDefaultWithJar(account, password, twofa)
+	if err != nil {
+		printFailMetricsAndExit(err.Error())
+	}
+
+	// TODO: warum loggen wir hier die gleichen Zeiten 2x?
+	log.Printf("RAI,service=%s,ordertype=%s %s=%d,%s=%d,%s=%d,%s=%d,%s=%d %d\n",
+		"rai",
+		"login",
+		"available", 1,
+		"init", durations.InitUrl,
+		"start", durations.StartUrl,
+		"login", durations.LoginUrl,
+		"total", durations.Total,
+		timeBegin.Unix())
+	log.Printf("OK:  RAI is allRAIt. init: %dms + start: %dms + login: %dms = %dms\n",
+		durations.InitUrl,
+		durations.StartUrl,
+		durations.LoginUrl,
+		durations.Total)
+
+	os.Exit(0)
+}
+
+func RunDefaultWithJar(account, password, twofa string) (RequestDurations, error) {
 	log.SetOutput(os.Stderr)
 	log.SetPrefix("UTC | ")
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
 
-	allgood := true
 	patternStart, patternInit, patternLogin := false, false, false
 
 	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	if err != nil {
-		log.Fatal(err)
+		return RequestDurations{}, err
 	}
 
 	UserClient := &http.Client{
@@ -71,28 +105,28 @@ func RunDefaultWithJar(account, password, twofa string) {
 	timeFirstRaiStartUrl := time.Now()
 
 	var startcookie *http.Cookie
-	reqStart, _ := http.NewRequest("GET", raiStartUrl, nil)
+	reqStart, _ := http.NewRequest(http.MethodGet, raiStartUrl, nil)
 	respStart, err := UserClient.Do(reqStart)
 	if err != nil {
-		printFailMetricsAndExit(err.Error())
+		return RequestDurations{}, err
 	}
+
 	bodyStartBytes, err := io.ReadAll(respStart.Body)
 	if err != nil {
-		printFailMetricsAndExit(err.Error())
+		return RequestDurations{}, err
 	}
 
 	timeFirstRaiStartUrlBodyComplete := time.Now()
 	durationRaiStartUrl := timeFirstRaiStartUrlBodyComplete.Sub(timeFirstRaiStartUrl).Milliseconds()
 
 	patternStart = strings.Contains(string(bodyStartBytes), "RegAcc-Profil-Pflege")
-
 	if !patternStart {
-		allgood = false
+		return RequestDurations{}, errConnectionToRAIFailed
 	}
 
 	urlRaiStart, err := url.Parse(raiStartUrl)
 	if err != nil {
-		log.Fatal(err)
+		return RequestDurations{}, err
 	}
 
 	for _, cookie := range jar.Cookies(urlRaiStart) {
@@ -104,16 +138,16 @@ func RunDefaultWithJar(account, password, twofa string) {
 
 	timeRaiInitUrl := time.Now()
 
-	reqInit, _ := http.NewRequest("GET", raiInitUrl, nil)
+	reqInit, _ := http.NewRequest(http.MethodGet, raiInitUrl, nil)
 	reqInit.AddCookie(startcookie)
 	respInit, err := UserClient.Do(reqInit)
 	if err != nil {
-		fmt.Println(err)
+		return RequestDurations{}, err
 	}
 
 	bodyInitBytes, err := io.ReadAll(respInit.Body)
 	if err != nil {
-		printFailMetricsAndExit(err.Error())
+		return RequestDurations{}, err
 	}
 
 	timeRaiInitUrlComplete := time.Now()
@@ -122,7 +156,7 @@ func RunDefaultWithJar(account, password, twofa string) {
 	patternInit = strings.Contains(string(bodyInitBytes), "j_security_check")
 
 	if !patternInit {
-		allgood = false
+		return RequestDurations{}, errConnectionToRAIFailed
 	}
 
 	postString := fmt.Sprintf("j_password=%s&j_username=%s&j_2fa=%s&login=submit", password, account, twofa)
@@ -132,20 +166,20 @@ func RunDefaultWithJar(account, password, twofa string) {
 	timeRaiLoginUrl := time.Now()
 
 	httpPostReq, err := http.NewRequest(http.MethodPost, raiLoginUrl, postBody)
+	if err != nil {
+		return RequestDurations{}, err
+	}
+
 	httpPostReq.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
-	if err != nil {
-		printFailMetricsAndExit(err.Error())
-	}
-
 	respLogin, err := UserClient.Do(httpPostReq)
-
 	if err != nil {
-		fmt.Println(err)
+		return RequestDurations{}, err
 	}
+
 	bodyLoginBytes, err := io.ReadAll(respLogin.Body)
 	if err != nil {
-		printFailMetricsAndExit(err.Error())
+		return RequestDurations{}, err
 	}
 
 	timeRaiLoginUrlComplete := time.Now()
@@ -155,24 +189,15 @@ func RunDefaultWithJar(account, password, twofa string) {
 	patternLogin = strings.Contains(string(bodyLoginBytes), "pw")
 
 	if !patternLogin {
-		allgood = false
+		return RequestDurations{}, errConnectionToRAIFailed
 	}
 
-	if allgood {
-		log.Printf("RAI,service=%s,ordertype=%s %s=%d,%s=%d,%s=%d,%s=%d,%s=%d %d\n",
-			"rai",
-			"login",
-			"available", 1,
-			"init", durationRaiInitUrl,
-			"start", durationRaiStartUrl,
-			"login", durationRaiLoginUrl,
-			"total", durationRaiTotal,
-			timeBegin.Unix())
-		log.Printf("OK:  RAI is allRAIt. init: %dms + start: %dms + login: %dms = %dms\n", durationRaiInitUrl, durationRaiStartUrl, durationRaiLoginUrl, durationRaiTotal)
-	} else {
-		printFailMetricsAndExit("Connection to RAI failed")
-	}
-	os.Exit(0)
+	return RequestDurations{
+		InitUrl:  durationRaiInitUrl,
+		StartUrl: durationRaiStartUrl,
+		LoginUrl: durationRaiLoginUrl,
+		Total:    durationRaiTotal,
+	}, nil
 }
 
 func printFailMetricsAndExit(errors ...string) {
